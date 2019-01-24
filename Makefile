@@ -18,9 +18,10 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-#CUDA_HOME=MY_CUDA_PATH
-#MPI_HOME=MY_MPI_PATH
-CUB_HOME=cub-1.5.1
+CUDA_HOME=/usr/local/cuda
+MPI_HOME=/usr
+CUB_HOME=/home/afender/sw/cub
+GDF_HOME=/home/afender/anaconda3/envs/cugraph_dev
 
 CC=$(MPI_HOME)/bin/mpicc
 CPP=$(MPI_HOME)/bin/mpic++
@@ -28,10 +29,10 @@ LD=$(MPI_HOME)/bin/mpic++
 
 CUDACC=$(CUDA_HOME)/bin/nvcc
 CUDA_ARCH=-arch=sm_60
-CUDACFLAGS=-m64 -c -O3 --ptxas-options=-v -I$(CUB_HOME) -I$(MPI_HOME)/include
+CUDACFLAGS=-m64 -c -O3 --ptxas-options=-v -I$(CUB_HOME) -I$(MPI_HOME)/include/mpi -I$(GDF_HOME)/include
 
-CFLAGS=-W -Wall -Wno-unused-function -Wno-unused-parameter -c -O3 -I$(CUDA_HOME)/include -I$(MPI_HOME)/include
-LDFLAGS = -lmpi -L$(CUDA_HOME)/lib64 -lcudart #-lnvToolsExt
+CFLAGS=-std=c++11 -W -Wall -Wno-unused-function -Wno-unused-parameter -c -O3 -I$(CUDA_HOME)/include -I$(MPI_HOME)/include/mpi -I$(GDF_HOME)/include
+LDFLAGS = -lmpi -L$(CUDA_HOME)/lib64 -lcudart -L$(GDF_HOME)/lib -lcudf #-lnvToolsExt
 
 OBJ=main.o phsort.o cuda_kernels.o adtp.o utils.o tmp_pool.o
 

@@ -21,6 +21,7 @@
  */
 #ifndef __CUDA_HPP__
 #define __CUDA_HPP__
+#include <cuda_runtime.h>
 
 #ifdef __cplusplus
 extern LINKAGE size_t BinCouple2ASCIICuda(LOCINT *d_u, LOCINT *d_v, int64_t n, char **d_data, int verbose);

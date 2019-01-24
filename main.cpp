@@ -32,6 +32,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <unistd.h>
+#include <cudf.h>
 //#include <cuda_profiler_api.h>
 
 #ifndef __APPLE__
@@ -75,6 +76,8 @@
 #endif
 char IOBUF[IOINT_NUM*(LOCINT_MAX_CHAR+1)];
 
+#define GDF_REQUIRE(F, S) if (!(F)) return (S);
+
 typedef struct {
 	int	code;
 	REAL	fp;
@@ -87,6 +90,34 @@ typedef struct {
 	int64_t	ned;
 } elist_t;
 
+// Perform gdf input check
+// Make local elist_t point to local GDF data 
+// No copy
+gdf_error load_gdf_input (const gdf_column *src_indices, 
+       					  const gdf_column *dest_indices,
+       					  elist_t *edge_list) {
+
+  GDF_REQUIRE( src_indices->size == dest_indices->size, GDF_COLUMN_SIZE_MISMATCH );
+  GDF_REQUIRE( src_indices->dtype == dest_indices->dtype, GDF_UNSUPPORTED_DTYPE );
+  GDF_REQUIRE( ((src_indices->dtype == GDF_INT32) || (src_indices->dtype == GDF_INT64)), GDF_UNSUPPORTED_DTYPE );
+  GDF_REQUIRE( src_indices->size > 0, GDF_DATASET_EMPTY ); 
+  edge_list->u = (LOCINT*)src_indices->data; 
+  edge_list->v = (LOCINT*)dest_indices->data; 
+  edge_list->ned = src_indices->size; 
+  return GDF_SUCCESS;
+}
+
+// Setup local gdf output
+// column gdf_v_idx contains global vertex IDs
+// column gdf_pr contains corresponding pr
+// No copy
+gdf_error fill_gdf_output (const spmat_t *m, 
+						   const REAL *pr,
+       					   gdf_column *gdf_v_idx, 
+       					   gdf_column *gdf_pr) {
+  // TO DO
+  return GDF_SUCCESS;
+}
 static int avoid_read_cache = 0;
 
 static void usage(const char *pname) {
@@ -340,11 +371,11 @@ static int64_t parallelReadGraph(const char *fpath, int scale, LOCINT **upptr, L
 		for(ptr = str; (*ptr == ' ') || (*ptr == '\t'); ptr++);
 		if (ptr[0] == '#') continue;
 
-		sscanf(str, "%"PRILOC" %"PRILOC"\n", &i, &j);
+		sscanf(str, "%" PRILOC " %" PRILOC "\n", &i, &j);
 
 		if (i >= N || j >= N) {
 			fprintf(stderr,
-				"[%d] found invalid edge in %s for N=%"PRILOC": (%"PRILOC", %"PRILOC")\n",
+				"[%d] found invalid edge in %s for N=%" PRILOC ": (%" PRILOC ", %" PRILOC ")\n",
 				rank, fpath, N, i, j);
 			exit(EXIT_FAILURE);
 		}
@@ -559,7 +590,7 @@ static int64_t freadGraphSOA(const char *fname, int scale, int edgef, LOCINT **u
 			p += str2bin(p, &val);
 			if (val >= N) {
 				fprintf(stderr,
-					"[%d] edge in file %s contains a vertex=%"PRILOC" >= 2^scale=%"PRILOC"\n",
+					"[%d] edge in file %s contains a vertex=%" PRILOC " >= 2^scale=%" PRILOC "\n",
 					rank, fname, val, N);
 				exit(EXIT_FAILURE);
 			}
@@ -682,7 +713,7 @@ void fwriteArrayInt(const char *fprefix, LOCINT *a, int64_t n) {
 	
 	fp = Fopen(fname, "w");
 	for(int64_t i = 0; i < n; i++)
-		fprintf(fp, "%"PRILOC"\n", a[i]);
+		fprintf(fp, "%" PRILOC "\n", a[i]);
 
 	fclose(fp);
 	return;
@@ -1166,7 +1197,7 @@ static void kernel2_multi(int scale, int edgef, spmat_t *m, elist_t *ein) {
 		for(int i = 0; i < m->sendNum; i++) {
 			for(int j = 0; j < m->sendCnts[i]; j++) {
 				if (rowsToSend[m->sendOffs[i]+j] < 0 || rowsToSend[m->sendOffs[i]+j] > m->intColsNum) {
-					fprintf(stderr, "[%d] error: rowsToSend[%"PRId64"] (%d-th row to send to proc %d) = %"PRILOC" > %"PRId64"\n",
+					fprintf(stderr, "[%d] error: rowsToSend[%" PRId64 "] (%d-th row to send to proc %d) = %" PRILOC " > %" PRId64 "\n",
 						rank, m->sendOffs[i]+j, j, m->sendNeigh[i], rowsToSend[m->sendOffs[i]+j], m->intColsNum);
 					exit(EXIT_FAILURE);
 				}
@@ -1182,7 +1213,7 @@ static void kernel2_multi(int scale, int edgef, spmat_t *m, elist_t *ein) {
 	return;
 }
 
-static void kernel3_multi(int scale, int edgef, int numIter, REAL c, REAL a, rhsv_t rval, spmat_t *m) {
+static void kernel3_multi(int scale, int edgef, int numIter, REAL c, REAL a, rhsv_t rval, spmat_t *m, REAL *pr) {
 
 	int		i, rank, ntask;
 	float		evt;
@@ -1225,7 +1256,7 @@ static void kernel3_multi(int scale, int edgef, int numIter, REAL c, REAL a, rhs
 		r_h = (REAL *)Malloc(N*sizeof(*r_h));
 		LOCINT nread = freadArray(rval.str, REAL_SPEC"\n", sizeof(REAL), (void *)r_h, N);
 		if (nread != N) {
-			fprintf(stderr, "[%d] found %"PRILOC" elements in RHS file %s but 2^scale=%"PRILOC" were needed!\n",
+			fprintf(stderr, "[%d] found %" PRILOC " elements in RHS file %s but 2^scale=%" PRILOC " were needed!\n",
 				rank, nread, rval.str, N);
 			exit(EXIT_FAILURE);
 		}
@@ -1392,9 +1423,8 @@ static void kernel3_multi(int scale, int edgef, int numIter, REAL c, REAL a, rhs
 
 	if (r_h) free(r_h);
 	if (reqs) free(reqs);
-	if (r_d[0]) CHECK_CUDA(cudaFree(r_d[0]));
-	if (r_d[1]) CHECK_CUDA(cudaFree(r_d[1]));
-
+	if (r_d[!(numIter&1)]) CHECK_CUDA(cudaFree(r_d[!(numIter&1)]));
+	pr = r_d[numIter&1];
 	return;
 }
 
@@ -1458,7 +1488,7 @@ int main(int argc, char **argv) {
 					prexit("Invalid edge factor (-S): %s\n", optarg);
 				break;
 			case 's':
-                                if (0 == sscanf(optarg, "%"PRId64, &gseed))
+                                if (0 == sscanf(optarg, "%" PRId64 , &gseed))
                                         prexit("Invalid seed for graph generator (-s): %s\n", optarg);
                                 break;
 			case 'i':
@@ -1538,8 +1568,8 @@ int main(int argc, char **argv) {
 
 	if (rank == 0) {
 		fprintf(stdout, "\nRunning Pagerank Benchmark with:\n\n");
-		fprintf(stdout, "Scale: %d (%"PRILOC" vertices)\n", scale, N);
-		fprintf(stdout, "Edge factor: %d (%"PRId64" edges)\n", edgef, ((int64_t)N)*edgef);
+		fprintf(stdout, "Scale: %d (%" PRILOC " vertices)\n", scale, N);
+		fprintf(stdout, "Edge factor: %d (%" PRId64 " edges)\n", edgef, ((int64_t)N)*edgef);
 		fprintf(stdout, "Number of processes: %d\n", ntask);
 		fprintf(stdout, "Rhs vector: %s\n", (rval.code==RHS_RANDOM)?"random":rval.str); 
 		fprintf(stdout, "Size of real: %zu\n", sizeof(REAL)); 
@@ -1555,7 +1585,7 @@ int main(int argc, char **argv) {
 		}
 		if (ginFile == NULL) {
 			fprintf(stdout, "Generating graph with:\n");
-			fprintf(stdout, "\tseed: %"PRId64"\n", gseed);
+			fprintf(stdout, "\tseed: %" PRId64 "\n", gseed);
 			fprintf(stdout, "\tclip'n'flip: %s\n", krcf?"yes":"no");
 			fprintf(stdout, "\tvertex permutation: %s\n", krpm?"yes":"no");
 		} else {
@@ -1576,7 +1606,9 @@ int main(int argc, char **argv) {
 			free(el);
 		}
 	}
-	kernel3_multi(scale, edgef, nit, c, a, rval, m);
+	REAL* pagerank;
+	kernel3_multi(scale, edgef, nit, c, a, rval, m, pagerank);
+	free(pagerank);
 
 	if (rval.str) free(rval.str);
 
