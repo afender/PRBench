@@ -781,7 +781,7 @@ void adjust_row_range(int scale, LOCINT *first_row, LOCINT *last_row) {
 	MPI_Sendrecv(first_row, 1, LOCINT_MPI, (rank+ntask-1)%ntask, rank,
 		     last_row, 1, LOCINT_MPI, (rank+1)%ntask, (rank+1)%ntask,
     		     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-
+	// TODO FIX THIS
 	*last_row = ((rank < ntask-1) ? *last_row : ((LOCINT)1)<<scale) -1;
 	if (rank == 0) *first_row = 0;
 
@@ -1139,6 +1139,9 @@ static void kernel2_multi(int scale, int edgef, spmat_t *m, elist_t *ein) {
 	// expand [m->firstRow, m->lastRow] ranges in order to partition [0, N-1]
 	// (empty rows outside any [m->firstRow, m->lastRow] range may appear as
 	// columns in other rows
+
+	// TODO FIX THIS : scale should not be used here for graph that has been read 
+	// This leads to resizing the matrix to the "scale" size 
 	adjust_row_range(scale, &m->firstRow, &m->lastRow);
 	m->intColsNum = m->lastRow - m->firstRow + 1;
 
