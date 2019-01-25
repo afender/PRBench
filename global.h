@@ -50,7 +50,7 @@
 #define CPUCLZ(x)	(__builtin_clz(x))
 #endif
 
-#define REAL_SIZE (8)
+#define REAL_SIZE (4)
 
 #if REAL_SIZE == 8
 #define REAL		double

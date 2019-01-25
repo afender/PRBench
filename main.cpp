@@ -111,11 +111,28 @@ gdf_error load_gdf_input (const gdf_column *src_indices,
 // column gdf_v_idx contains global vertex IDs
 // column gdf_pr contains corresponding pr
 // No copy
-gdf_error fill_gdf_output (const spmat_t *m, 
-						   const REAL *pr,
+gdf_error fill_gdf_output (spmat_t *m, 
+						   REAL *pr,
        					   gdf_column *gdf_v_idx, 
        					   gdf_column *gdf_pr) {
-  // TO DO
+
+  LOCINT* idx;
+  cudaMalloc(&idx, m->intColsNum*sizeof(LOCINT));
+  sequence(m->intColsNum,idx,m->firstRow);
+//commented becasue cuDF calls fail becasue of NVStrings
+/*
+#if LOCINT_SIZE == 8
+  gdf_column_view(gdf_v_idx, idx, nullptr, m->intColsNum, GDF_INT64);
+#else
+  gdf_column_view(gdf_v_idx, idx, nullptr, m->intColsNum, GDF_INT32);
+#endif
+
+#if REAL_SIZE == 8
+  gdf_column_view(gdf_pr, pr, nullptr, m->intColsNum, GDF_FLOAT64);
+#else
+  gdf_column_view(gdf_pr, pr, nullptr, m->intColsNum, GDF_FLOAT32);
+#endif
+*/
   return GDF_SUCCESS;
 }
 static int avoid_read_cache = 0;
@@ -486,6 +503,15 @@ static size_t fwriteGraphSOA(LOCINT *u, LOCINT *v, int64_t ned, const char *fnam
 	*wtime += MPI_Wtime() - t;
 
 	return off;
+}
+
+void darray2file(FILE *fp, int n, LOCINT *d_a) {
+    LOCINT *h_a = (LOCINT*)Malloc(n*sizeof(LOCINT));
+	CHECK_CUDA(cudaMemcpy(h_a, d_a, n*sizeof(LOCINT), cudaMemcpyDeviceToHost));
+	for(int i = 0; i < n; i++)
+		fprintf(fp, "%d ", h_a[i]);
+	fprintf(fp, "\n");
+	free(h_a);
 }
 
 static size_t fwriteGraphSOA_GCONV(LOCINT *d_u, LOCINT *d_v, int64_t ned, const char *fname, double *wtime) {
@@ -1380,8 +1406,21 @@ static void kernel3_multi(int scale, int edgef, int numIter, REAL c, REAL a, rhs
 		REAL *r = new REAL[m->intColsNum];
 		CHECK_CUDA(cudaMemcpy(r, r_d[numIter&1], m->intColsNum*sizeof(*r), cudaMemcpyDeviceToHost));
 		FILE *fp = fopen(fname, "w");
+
+		//fprintf(fp, "ncsr: %d\nFirst row: %d\nLast row: %d\nintColsNum:%d\n", m->ncsr, m->firstRow, m->lastRow,m->intColsNum);
+		//fprintf(fp, "nrows :\n");
+	    //for(i = 0; i < m->ncsr; i++)
+		//	fprintf(fp, "%d ", m->nrows[i]);
+		//fprintf(fp, "\n");
+		//fprintf(fp, "rows_d :\n");
+		//for(i = 0; i < m->ncsr; i++)
+		//	darray2file(fp, m->nrows[i], m->rows_d[i]);
+		////for(i = 0; i < m->intColsNum; i++)
+		////	fprintf(fp, "%d ", m->rows_d[i]);
+		//fprintf(fp, "\n");
+		//fprintf(fp, "Pagerank: \n");
 		for(i = 0; i < m->intColsNum; i++)
-			fprintf(fp, "%E\n", r[i]);
+			fprintf(fp, "%d %E\n",m->firstRow+i, r[i]);
 		fclose(fp);
 		delete [] r;
 	}

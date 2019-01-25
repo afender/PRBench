@@ -84,4 +84,5 @@ extern LINKAGE void get_extdata_cuda(int ncsr, LOCINT *nnz, LOCINT **cols_d, LOC
 				     int **recvNeigh, int *recvNum, int64_t **recvCnt, int64_t **recvOff, int64_t *totRecv,
 				     int **sendNeigh, int *sendNum, int64_t **sendCnt, int64_t **sendOff, int64_t *totSend,
 				     LOCINT **sendRows, MPI_Comm COMM);
+extern LINKAGE void sequence(LOCINT n, LOCINT *vec, LOCINT init);
 #endif

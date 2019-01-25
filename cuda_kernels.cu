@@ -33,6 +33,9 @@
 #define NDEBUG
 #include <assert.h>
 
+#include <thrust/device_vector.h>
+#include <thrust/transform.h>
+
 #include "global.h"
 #include "phsort.h"
 #include "utils.h"
@@ -2304,3 +2307,9 @@ void computeSpmvAcc(REAL c, LOCINT nrows, LOCINT *rows, LOCINT *roff,
 
 	return;
 }
+
+void sequence(LOCINT n, LOCINT *vec, LOCINT init = 0)
+{
+  thrust::sequence(thrust::device,thrust::device_pointer_cast(vec), thrust::device_pointer_cast(vec+n), init);
+}
+
