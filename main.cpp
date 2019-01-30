@@ -1115,6 +1115,7 @@ static void kernel2_multi(int scale, int edgef, spmat_t *m, elist_t *ein) {
 	m->firstRow = u[0];
 	m->lastRow  = u[ned-1];
 
+
 	// quick sanity check on (sorted) edges received as input
 	check_row_overlap(m->firstRow, m->lastRow, &EXCH_UP, &EXCH_DOWN);
 	if (EXCH_UP || EXCH_DOWN) {
@@ -1127,6 +1128,7 @@ static void kernel2_multi(int scale, int edgef, spmat_t *m, elist_t *ein) {
 
 	LOCINT	*u_d=NULL, *v_d=NULL; // alloc-ed in remove_rows_cuda() and
 				      // dealloc-ed in get_csr_multi_cuda()
+
 	ned = remove_rows_cuda(u, v, ned, &u_d, &v_d);
 	CHECK_CUDA(cudaMemcpy(&m->firstRow, u_d, sizeof(m->firstRow), cudaMemcpyDeviceToHost));
 
@@ -1136,14 +1138,19 @@ static void kernel2_multi(int scale, int edgef, spmat_t *m, elist_t *ein) {
 		fprintf(stderr, "Processor %d shares rows with neighboring processors!!!\n", rank);
 		exit(EXIT_FAILURE);
 	}
+
+
+	// adjust_row_range was disabled as part of cugraph integration
+	// Scale should not be used here for graph that has been read 
+	// This leads to resizing the matrix to the "scale" size 
+	
 	// expand [m->firstRow, m->lastRow] ranges in order to partition [0, N-1]
 	// (empty rows outside any [m->firstRow, m->lastRow] range may appear as
 	// columns in other rows
-
-	// TODO FIX THIS : scale should not be used here for graph that has been read 
-	// This leads to resizing the matrix to the "scale" size 
-	adjust_row_range(scale, &m->firstRow, &m->lastRow);
+	//adjust_row_range(scale, &m->firstRow, &m->lastRow);
+	
 	m->intColsNum = m->lastRow - m->firstRow + 1;
+
 
 	lastrow_all = (LOCINT *)Malloc(ntask*sizeof(*lastrow_all));
 	MPI_Allgather(&m->lastRow, 1, LOCINT_MPI, lastrow_all, 1, LOCINT_MPI, MPI_COMM_WORLD);
@@ -1410,18 +1417,18 @@ static void kernel3_multi(int scale, int edgef, int numIter, REAL c, REAL a, rhs
 		CHECK_CUDA(cudaMemcpy(r, r_d[numIter&1], m->intColsNum*sizeof(*r), cudaMemcpyDeviceToHost));
 		FILE *fp = fopen(fname, "w");
 
-		//fprintf(fp, "ncsr: %d\nFirst row: %d\nLast row: %d\nintColsNum:%d\n", m->ncsr, m->firstRow, m->lastRow,m->intColsNum);
-		//fprintf(fp, "nrows :\n");
-	    //for(i = 0; i < m->ncsr; i++)
-		//	fprintf(fp, "%d ", m->nrows[i]);
-		//fprintf(fp, "\n");
-		//fprintf(fp, "rows_d :\n");
-		//for(i = 0; i < m->ncsr; i++)
-		//	darray2file(fp, m->nrows[i], m->rows_d[i]);
-		////for(i = 0; i < m->intColsNum; i++)
-		////	fprintf(fp, "%d ", m->rows_d[i]);
-		//fprintf(fp, "\n");
-		//fprintf(fp, "Pagerank: \n");
+		fprintf(fp, "ncsr: %d\nFirst row: %d\nLast row: %d\nintColsNum:%d\n", m->ncsr, m->firstRow, m->lastRow,m->intColsNum);
+		fprintf(fp, "nrows :\n");
+	    for(i = 0; i < m->ncsr; i++)
+			fprintf(fp, "%d ", m->nrows[i]);
+		fprintf(fp, "\n");
+		fprintf(fp, "rows_d :\n");
+		for(i = 0; i < m->ncsr; i++)
+			darray2file(fp, m->nrows[i], m->rows_d[i]);
+		//for(i = 0; i < m->intColsNum; i++)
+		//	fprintf(fp, "%d ", m->rows_d[i]);
+		fprintf(fp, "\n");
+		fprintf(fp, "Pagerank: \n");
 		for(i = 0; i < m->intColsNum; i++)
 			fprintf(fp, "%d %E\n",m->firstRow+i, r[i]);
 		fclose(fp);
