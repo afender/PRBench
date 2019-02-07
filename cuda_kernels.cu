@@ -1191,6 +1191,14 @@ __global__ void mark_subm(LOCINT *v, int64_t n, LOCINT *sep, int nsep, int *subm
 	return;
 } 
 
+int64_t keep_all_rows_cuda(LOCINT *u_h, LOCINT *v_h, int64_t ned, LOCINT **uout_d, LOCINT **vout_d) {
+	uout_d[0] = (LOCINT *)tmp_get(bufpool, ned*sizeof(*uout_d[0]));
+	vout_d[0] = (LOCINT *)tmp_get(bufpool, ned*sizeof(*vout_d[0]));
+	CHECK_CUDA(cudaMemcpy(uout_d[0], u_h, ned*sizeof(*uout_d[0]), cudaMemcpyHostToDevice));
+	CHECK_CUDA(cudaMemcpy(vout_d[0], v_h, ned*sizeof(*vout_d[0]), cudaMemcpyHostToDevice));
+	return ned;
+}
+
 int64_t remove_rows_cuda(LOCINT *u_h, LOCINT *v_h, int64_t ned, LOCINT **uout_d, LOCINT **vout_d) {
 
 	// 1. REMOVE ROWS WITH LENGTH EQUAL TO MAXIMUM OR 1 

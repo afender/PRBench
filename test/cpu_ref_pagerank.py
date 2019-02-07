@@ -43,6 +43,8 @@ pr = nx.pagerank(Gnx, alpha=alpha, nstart = z, max_iter=5000, tol = 1e-10)
 t2 =  time.time() - t1
 print('Time : '+str(t2))
 
+print(pr)
+
 b = open(os.path.splitext(os.path.basename(mmFile))[0] + '_pagerank.txt', "w")
 for k,v in pr.items():
     b.write(str(k)+" " +str(v) + "\n")        

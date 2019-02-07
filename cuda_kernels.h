@@ -43,6 +43,7 @@ extern LINKAGE void generate_kron(int scale, int64_t ned,
 				  REAL a, REAL b, REAL c,
 				  LOCINT *d_i, LOCINT *d_j,
 				  int64_t seed, int cnf, int perm);
+extern LINKAGE int64_t keep_all_rows_cuda(LOCINT *u_h, LOCINT *v_h, int64_t ned, LOCINT **uout_d, LOCINT **vout_d);
 
 extern LINKAGE int64_t remove_rows_cuda(LOCINT *u_h, LOCINT *v_h, int64_t ned, LOCINT **u_d, LOCINT **v_d);
 

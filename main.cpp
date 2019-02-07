@@ -90,51 +90,6 @@ typedef struct {
 	int64_t	ned;
 } elist_t;
 
-// Perform gdf input check
-// Make local elist_t point to local GDF data 
-// No copy
-gdf_error load_gdf_input (const gdf_column *src_indices, 
-       					  const gdf_column *dest_indices,
-       					  elist_t *edge_list) {
-
-  GDF_REQUIRE( src_indices->size == dest_indices->size, GDF_COLUMN_SIZE_MISMATCH );
-  GDF_REQUIRE( src_indices->dtype == dest_indices->dtype, GDF_UNSUPPORTED_DTYPE );
-  GDF_REQUIRE( ((src_indices->dtype == GDF_INT32) || (src_indices->dtype == GDF_INT64)), GDF_UNSUPPORTED_DTYPE );
-  GDF_REQUIRE( src_indices->size > 0, GDF_DATASET_EMPTY ); 
-  edge_list->u = (LOCINT*)src_indices->data; 
-  edge_list->v = (LOCINT*)dest_indices->data; 
-  edge_list->ned = src_indices->size; 
-  return GDF_SUCCESS;
-}
-
-// Setup local gdf output
-// column gdf_v_idx contains global vertex IDs
-// column gdf_pr contains corresponding pr
-// No copy
-gdf_error fill_gdf_output (spmat_t *m, 
-						   REAL *pr,
-       					   gdf_column *gdf_v_idx, 
-       					   gdf_column *gdf_pr) {
-
-  LOCINT* idx;
-  cudaMalloc(&idx, m->intColsNum*sizeof(LOCINT));
-  sequence(m->intColsNum,idx,m->firstRow);
-//commented becasue cuDF calls fail becasue of NVStrings
-/*
-#if LOCINT_SIZE == 8
-  gdf_column_view(gdf_v_idx, idx, nullptr, m->intColsNum, GDF_INT64);
-#else
-  gdf_column_view(gdf_v_idx, idx, nullptr, m->intColsNum, GDF_INT32);
-#endif
-
-#if REAL_SIZE == 8
-  gdf_column_view(gdf_pr, pr, nullptr, m->intColsNum, GDF_FLOAT64);
-#else
-  gdf_column_view(gdf_pr, pr, nullptr, m->intColsNum, GDF_FLOAT32);
-#endif
-*/
-  return GDF_SUCCESS;
-}
 static int avoid_read_cache = 0;
 
 static void usage(const char *pname) {
@@ -771,7 +726,7 @@ static void check_row_overlap(LOCINT first_row, LOCINT last_row, int *exchup, in
 	return;
 }
 	
-void adjust_row_range(int scale, LOCINT *first_row, LOCINT *last_row) {
+void adjust_row_range(size_t N, LOCINT *first_row, LOCINT *last_row) {
 
 	int	rank, ntask;
 	
@@ -782,7 +737,7 @@ void adjust_row_range(int scale, LOCINT *first_row, LOCINT *last_row) {
 		     last_row, 1, LOCINT_MPI, (rank+1)%ntask, (rank+1)%ntask,
     		     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 	// TODO FIX THIS
-	*last_row = ((rank < ntask-1) ? *last_row : ((LOCINT)1)<<scale) -1;
+	*last_row = ((rank < ntask-1) ? *last_row : N-1);
 	if (rank == 0) *first_row = 0;
 
 	return;	
@@ -1072,7 +1027,7 @@ static void kernel1(int scale, int edgef, double rtol, elist_t *eio, int transpo
 	return;
 }
 
-static void kernel2_multi(int scale, int edgef, spmat_t *m, elist_t *ein) {
+static void coo2csr(size_t N, spmat_t *m, elist_t *ein) {
 
 	double tr=0, tg=0, tdr=0;
 
@@ -1094,6 +1049,7 @@ static void kernel2_multi(int scale, int edgef, spmat_t *m, elist_t *ein) {
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &ntask);
 
+
 	if (!ein) {
 		snprintf(fname, MAX_LINE, "sorted_%d.txt", rank);
 
@@ -1111,7 +1067,7 @@ static void kernel2_multi(int scale, int edgef, spmat_t *m, elist_t *ein) {
 		v = ein->v;
 		ned = ein->ned;
 	}
-
+	
 	m->firstRow = u[0];
 	m->lastRow  = u[ned-1];
 
@@ -1129,7 +1085,12 @@ static void kernel2_multi(int scale, int edgef, spmat_t *m, elist_t *ein) {
 	LOCINT	*u_d=NULL, *v_d=NULL; // alloc-ed in remove_rows_cuda() and
 				      // dealloc-ed in get_csr_multi_cuda()
 
-	ned = remove_rows_cuda(u, v, ned, &u_d, &v_d);
+	// remove rows smaller than 1
+	//ned = remove_rows_cuda(u, v, ned, &u_d, &v_d);
+	
+	// simply keep the same input 
+	ned = keep_all_rows_cuda(u, v, ned, &u_d, &v_d);
+
 	CHECK_CUDA(cudaMemcpy(&m->firstRow, u_d, sizeof(m->firstRow), cudaMemcpyDeviceToHost));
 
 	// quick sanity check
@@ -1138,16 +1099,11 @@ static void kernel2_multi(int scale, int edgef, spmat_t *m, elist_t *ein) {
 		fprintf(stderr, "Processor %d shares rows with neighboring processors!!!\n", rank);
 		exit(EXIT_FAILURE);
 	}
-
-
-	// adjust_row_range was disabled as part of cugraph integration
-	// Scale should not be used here for graph that has been read 
-	// This leads to resizing the matrix to the "scale" size 
 	
 	// expand [m->firstRow, m->lastRow] ranges in order to partition [0, N-1]
 	// (empty rows outside any [m->firstRow, m->lastRow] range may appear as
 	// columns in other rows
-	//adjust_row_range(scale, &m->firstRow, &m->lastRow);
+	//adjust_row_range(N, &m->firstRow, &m->lastRow);
 	
 	m->intColsNum = m->lastRow - m->firstRow + 1;
 
@@ -1216,14 +1172,11 @@ static void kernel2_multi(int scale, int edgef, spmat_t *m, elist_t *ein) {
 	}
 	//cudaProfilerStop();
 	if (0 == rank) {
-		printf("Kernel 2 (scale=%d, edgef=%d):\n", scale, edgef); 
 		if (!ein) {
 			printf("\tread  time: %.4lf secs, %.2lf Mbytes/sec\n", tr, rbytes/(1024.0*1024.0)/tr);
 			printf("\t\tmin/max disk read time: %.4lf/%.4lf secs, %.2lf/%.2lf Mbytes/sec\n", min_rt, max_rt, min_rr, max_rr);
 		}
 		printf("\tgen   time: %.4lf secs\n", tg);
-		printf("\tTOTAL time: %.4lf secs (I/O: %.0lf%%), %.2lf Medges/sec\n\n",
-		       (tr+tg), 100.0*tr/(tr+tg), 1E-6*(((LOCINT)1) << scale)*edgef/(tr+tg));
 		fflush(stdout);
 	}
 
@@ -1249,14 +1202,13 @@ static void kernel2_multi(int scale, int edgef, spmat_t *m, elist_t *ein) {
 	return;
 }
 
-static void kernel3_multi(int scale, int edgef, int numIter, REAL c, REAL a, rhsv_t rval, spmat_t *m, REAL *pr) {
+static void pagerank_solver(int numIter, REAL c, REAL a, rhsv_t rval, spmat_t *m, REAL *pr) {
 
 	int		i, rank, ntask;
 	float		evt;
 	double		tg=0, tc=0, t=0;
 	double		tspmv[2]={0,0}, tmpi[2]={0,0}, td2h[2]={0,0}, th2d[2]={0,0};
 	REAL		*r_h=NULL, *r_d[2]={NULL,NULL}, sum;
-	LOCINT		N = ((LOCINT)1) << scale;
 	MPI_Request	*reqs=NULL;
 
 	cudaStream_t	stream[2];
@@ -1285,18 +1237,10 @@ static void kernel3_multi(int scale, int edgef, int numIter, REAL c, REAL a, rhs
 	// generate RHS
 	if (rval.code == RHS_RANDOM) {
 		generate_rhs(m->intColsNum, r_d[0]);
-	} else if (rval.code == RHS_CONSTANT) {
+	} 
+	else { //constant
 		setarray(r_d[0], m->intColsNum, rval.fp); 
 		CHECK_CUDA(cudaDeviceSynchronize());
-	} else {
-		r_h = (REAL *)Malloc(N*sizeof(*r_h));
-		LOCINT nread = freadArray(rval.str, REAL_SPEC"\n", sizeof(REAL), (void *)r_h, N);
-		if (nread != N) {
-			fprintf(stderr, "[%d] found %" PRILOC " elements in RHS file %s but 2^scale=%" PRILOC " were needed!\n",
-				rank, nread, rval.str, N);
-			exit(EXIT_FAILURE);
-		}
-		CHECK_CUDA(cudaMemcpy(r_d[0], r_h + m->firstRow, m->intColsNum*sizeof(*(r_d[0])), cudaMemcpyHostToDevice));
 	}
 	MPI_Barrier(MPI_COMM_WORLD);
 	tg = MPI_Wtime()-tg;
@@ -1415,20 +1359,20 @@ static void kernel3_multi(int scale, int edgef, int numIter, REAL c, REAL a, rhs
 		snprintf(fname, 256, "myresult_%d.txt", rank);
 		REAL *r = new REAL[m->intColsNum];
 		CHECK_CUDA(cudaMemcpy(r, r_d[numIter&1], m->intColsNum*sizeof(*r), cudaMemcpyDeviceToHost));
+		//LOCINT *r_idx = new LOCINT[m->intColsNum];
+		//CHECK_CUDA(cudaMemcpy(r_idx, m->rows_d[rank], m->intColsNum*sizeof(*r_idx), cudaMemcpyDeviceToHost));
 		FILE *fp = fopen(fname, "w");
-
-		fprintf(fp, "ncsr: %d\nFirst row: %d\nLast row: %d\nintColsNum:%d\n", m->ncsr, m->firstRow, m->lastRow,m->intColsNum);
-		fprintf(fp, "nrows :\n");
-	    for(i = 0; i < m->ncsr; i++)
-			fprintf(fp, "%d ", m->nrows[i]);
-		fprintf(fp, "\n");
-		fprintf(fp, "rows_d :\n");
-		for(i = 0; i < m->ncsr; i++)
-			darray2file(fp, m->nrows[i], m->rows_d[i]);
-		//for(i = 0; i < m->intColsNum; i++)
-		//	fprintf(fp, "%d ", m->rows_d[i]);
-		fprintf(fp, "\n");
-		fprintf(fp, "Pagerank: \n");
+		//fprintf(fp, "ncsr: %d\nFirst row: %d\nLast row: %d\nintColsNum:%d\n", m->ncsr, m->firstRow, m->lastRow,m->intColsNum);
+		//fprintf(fp, "nrows :\n");
+	    //for(i = 0; i < m->ncsr; i++)
+		//	fprintf(fp, "%d ", m->nrows[i]);
+		//fprintf(fp, "\n");
+		//fprintf(fp, "rows_d :\n");
+		//for(i = 0; i < m->ncsr; i++)
+		//	darray2file(fp, m->nrows[i], m->rows_d[i]);
+		//darray2file(fp, m->intColsNum, m->rows_d[rank]);
+		//fprintf(fp, "\n");
+		//fprintf(fp, "Pagerank: \n");
 		for(i = 0; i < m->intColsNum; i++)
 			fprintf(fp, "%d %E\n",m->firstRow+i, r[i]);
 		fclose(fp);
@@ -1449,17 +1393,12 @@ static void kernel3_multi(int scale, int edgef, int numIter, REAL c, REAL a, rhs
 	MPI_Reduce(rank?tspmv:MPI_IN_PLACE, tspmv, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
 
 	if (0 == rank) {
-		printf("Kernel 3 (scale=%d, edgef=%d, numiter=%d, c=%G, a=%G, rhs=%s):\n",
-		       scale, edgef, numIter, c, a, (rval.code==0)?"RND":rval.str); 
-
 		printf("\tgen   time: %.4lf secs\n", tg);
 		printf("\tcomp  time: %.4lf secs\n", tc);
 		printf("\t\tmin/max  d2h: %.4lf/%.4lf secs\n", td2h[0], td2h[1]);
 		printf("\t\tmin/max  mpi: %.4lf/%.4lf secs\n", tmpi[0], tmpi[1]);
 		printf("\t\tmin/max  h2d: %.4lf/%.4lf secs\n", th2d[0], th2d[1]);
 		printf("\t\tmin/max spmv: %.4lf/%.4lf secs\n", tspmv[0], tspmv[1]);
-		printf("\tTOTAL time: %.4lf secs, %.2lf Medges/sec, MFLOPS: %.4f\n\n", 
-		       (tg+tc), 1E-6*N*edgef*numIter/(tg+tc), 2E-6*N*edgef*numIter/(tg+tc));
 		printf("PageRank sum: %E\n", sum);
 	}
 
@@ -1476,6 +1415,85 @@ static void kernel3_multi(int scale, int edgef, int numIter, REAL c, REAL a, rhs
 	pr = r_d[numIter&1];
 	return;
 }
+
+// Perform gdf input check
+// Make local elist_t point to local GDF data 
+// No copy
+gdf_error load_gdf_input (const gdf_column *src_indices, 
+       					  const gdf_column *dest_indices,
+       					  elist_t *el) {
+
+  GDF_REQUIRE( src_indices->size == dest_indices->size, GDF_COLUMN_SIZE_MISMATCH );
+  GDF_REQUIRE( src_indices->dtype == dest_indices->dtype, GDF_UNSUPPORTED_DTYPE );
+  GDF_REQUIRE( ((src_indices->dtype == GDF_INT32) || (src_indices->dtype == GDF_INT64)), GDF_UNSUPPORTED_DTYPE );
+  GDF_REQUIRE( src_indices->size > 0, GDF_DATASET_EMPTY ); 
+
+  el = (elist_t *)Malloc(sizeof(*el));
+  el->u = (LOCINT*)src_indices->data; 
+  el->v = (LOCINT*)dest_indices->data; 
+  el->ned = src_indices->size; 
+  return GDF_SUCCESS;
+}
+
+// Setup local gdf output
+// column gdf_v_idx contains global vertex IDs
+// column gdf_pr contains corresponding pr
+// No copy
+gdf_error fill_gdf_output (spmat_t *m, 
+						   REAL *pr,
+       					   gdf_column *gdf_v_idx, 
+       					   gdf_column *gdf_pr) {
+
+  LOCINT* idx;
+  cudaMalloc(&idx, m->intColsNum*sizeof(LOCINT));
+  sequence(m->intColsNum,idx,m->firstRow);
+  
+//commented becasue cuDF calls fail becasue of NVStrings
+/*
+#if LOCINT_SIZE == 8
+  gdf_column_view(gdf_v_idx, idx, nullptr, m->intColsNum, GDF_INT64);
+#else
+  gdf_column_view(gdf_v_idx, idx, nullptr, m->intColsNum, GDF_INT32);
+#endif
+
+#if REAL_SIZE == 8
+  gdf_column_view(gdf_pr, pr, nullptr, m->intColsNum, GDF_FLOAT64);
+#else
+  gdf_column_view(gdf_pr, pr, nullptr, m->intColsNum, GDF_FLOAT32);
+#endif
+*/
+  return GDF_SUCCESS;
+}
+
+void gdf_multi_coo2csr(size_t N, const gdf_column *src_indices, const gdf_column *dest_indices,
+	                   spmat_t *m) {
+	elist_t * el = nullptr;
+	load_gdf_input(src_indices, dest_indices, el);
+	coo2csr(N, m, el);
+	if (el) free(el); // just free the structure
+}
+
+gdf_error gdf_multi_pagerank(const size_t N, const gdf_column *src_indices, const gdf_column *dest_indices,
+	                         gdf_column *v_idx, gdf_column *pagerank, REAL damping_factor, int max_iter) {
+	
+    int	rank, ntask;
+	rhsv_t	rval = {RHS_RANDOM, REALV(0.0), NULL};
+	REAL a = (REALV(1.0)-damping_factor)/((REAL)N);
+	//MPI_Init(&argc, &argv); //?
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	MPI_Comm_size(MPI_COMM_WORLD, &ntask);
+	spmat_t *m = createSpmat(ntask);
+    REAL* pr;
+	gdf_multi_coo2csr(N, src_indices, dest_indices, m);
+	pagerank_solver(max_iter, damping_factor, a, rval, m, pr);
+	fill_gdf_output(m, pr, v_idx, pagerank);
+	if (rval.str) free(rval.str);
+	//destroySpmat(m);
+	//cleanup_cuda(); //?
+	//CHECK_CUDA(cudaDeviceReset()); ? //?
+	//MPI_Finalize(); //?
+}
+
 
 int main(int argc, char **argv) {
 
@@ -1599,7 +1617,7 @@ int main(int argc, char **argv) {
 		prexit("Graphs from file (-g option) can only be processed starting from kernel 0 (-k 0).\n"); 
 	}
 
-	N=((LOCINT)1)<<scale;
+	N=32;
 	if (REAL_MAX == c) c = REALV(0.85);
 	if (REAL_MAX == a) a = (REALV(1.0)-c)/((REAL)N);
 
@@ -1645,7 +1663,7 @@ int main(int argc, char **argv) {
 	switch(startk) {
 		case 0: kernel0(scale, edgef, gseed, krcf, krpm, ginFile, el);
 		case 1: kernel1(scale, edgef, 100.0, el, 1);
-		case 2: kernel2_multi(scale, edgef, m, el);
+		case 2: coo2csr(N, m, el);
 	}
 
 	if (!doIO) {
@@ -1656,7 +1674,7 @@ int main(int argc, char **argv) {
 		}
 	}
 	REAL* pagerank;
-	kernel3_multi(scale, edgef, nit, c, a, rval, m, pagerank);
+	pagerank_solver(nit, c, a, rval, m, pagerank);
 	free(pagerank);
 
 	if (rval.str) free(rval.str);
